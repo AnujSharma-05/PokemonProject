@@ -1,22 +1,9 @@
 import pandas as pd
-import google.generativeai as genai
-from dotenv import load_dotenv
-import os
+from sentence_transformers import SentenceTransformer
+import chromadb
 
-# 1. Load the environment variables from the .env file.
-# This securely loads your API key.
-load_dotenv()
-
-# 2. Configure the Gemini API with your API key.
-try:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("API key not found. Please check your .env file.")
-    genai.configure(api_key=api_key)
-except Exception as e:
-    print(f"Error configuring Gemini API: {e}")
-    # We exit the script here because we cannot proceed without the API key.
-    exit()
+# 1. Load the local embedding model
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # 3. Define the path to your CSV file.
 file_path = 'pokemon.csv'
@@ -65,24 +52,38 @@ try:
     # This is the "batch" of data we will send in one API call.
     all_text_chunks = df['text_chunk'].tolist()
 
-    print("\nCreating batch embeddings for all Pokémon...")
+    print("\nCreating batch embeddings for all Pokémon using SentenceTransformers...")
     print(f"Total Pokémon to embed: {len(all_text_chunks)}")
 
-    # 9. Make a single API call to get all embeddings at once.
-    # The 'genai.embed_content' function handles batching automatically when given a list.
-    response = genai.embed_content(
-        model='models/embedding-001',
-        content=all_text_chunks,
-    )
-    
-    # 10. Extract the embeddings from the response.
-    embeddings = response['embedding']
+    # 9. Generate embeddings locally
+    embeddings = model.encode(all_text_chunks, show_progress_bar=True)
 
-    # 11. Add the new 'embeddings' column back to the DataFrame.
-    # We must ensure the number of embeddings matches the number of rows.
+    # 10. Add the new 'embeddings' column back to the DataFrame.
     if len(embeddings) == len(df):
-        df['embedding'] = embeddings
+        df['embedding'] = list(embeddings)
         print("\nBatch embeddings created and added to the DataFrame successfully!")
+        print(f"Storing embeddings in chromaDB...")
+        client = chromadb.PersistentClient(path="pokemon_db")
+        try:
+            collection = client.create_collection(name="pokemon_embeddings")
+        except:
+            collection = client.get_collection(name="pokemon_embeddings")
+
+        ids = [str(i) for i in range(len(df))]
+        embeddings_list = df['embedding'].tolist()
+        documents = df['text_chunk'].tolist()
+        metadatas = [{"name": row['name'], "type1": row['type1'], "type2": row['type2']} for _, row in df.iterrows()]
+
+        collection.add(
+            embeddings=embeddings_list,
+            documents=documents,
+            metadatas=metadatas,
+            ids=ids
+        )   
+        
+
+        print(f"Successfully stored {len(df)} Pokémon embeddings in ChromaDB!")
+        
     else:
         print("\nError: The number of embeddings does not match the number of rows.")
 
